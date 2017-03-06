@@ -1,0 +1,148 @@
+///fold:
+var marginalize = function(dist, key){
+  return Infer({method: "enumerate"}, function(){
+    return sample(dist)[key];
+  })
+}
+///
+
+var book = {
+  "prices": [2, 6, 10, 14, 18, 22, 26, 30],
+  "probabilities": [1, 2, 3, 4, 4, 3, 2, 1]
+};
+
+var statePrior = function() {
+  return categorical(book.probabilities, book.prices);
+};
+
+var thetaPrior = function() {
+    return uniformDraw(book.prices);
+};
+
+var alpha = 10; // rationality parameter
+console.log("Rationality is "+alpha);
+
+var utterances = ["expensive", ""];
+var cost = {
+  "expensive": 0.2,
+  "": 0
+};
+console.log("Difference in utterance cost is "+(cost["expensive"]-cost[""]));
+var utterancePrior = function() {
+  var uttProbs = map(function(u) {return Math.exp(-cost[u]) }, utterances);
+  return categorical(uttProbs, utterances);
+};
+
+var meaning = function(utterance, price, theta) {
+  if (utterance == "expensive") {
+    return price >= theta;
+  } else {
+    return true;
+  }
+};
+
+// The literal listener simply conditions on the utterance being true.
+// Rather than being given a value for theta,
+// it returns a joint distribution over prices and values for theta.
+var literalListener = cache(function(utterance) {
+  return Infer({method: "enumerate"}, function() {
+    var price = statePrior();
+    var theta = thetaPrior();
+
+    condition(meaning(utterance, price, theta));
+
+    return {price: price,
+            theta: theta};
+  });
+});
+
+// The basic speaker conditions on the literal listener inferring the correct price.
+// It returns a joint distribution over utterances and values for theta.
+var basicSpeaker = cache(function(price) {
+  return Infer({method: "enumerate"}, function() {
+    var utterance = utterancePrior();
+    var l0_joint = literalListener(utterance);
+    var sampled_l0 = sample(l0_joint);
+    
+    condition(sampled_l0.price == price);
+    
+    return {utterance: utterance,
+            theta: sampled_l0.theta};
+  });
+});
+
+// The optimal speaker wants to optimise the probability of
+// the literal listener making the correct inference about the price,
+// and doesn't care about the inference of theta.
+// So, we need to take a softmax over the basic speaker's distribution,
+// but marginalising out theta (which we don't care about).
+// Theta is still part of the joint distribution
+// (which means the pragmatic listener can reason about it),
+// but the speaker is not optimising for its inference.
+// Setting alpha to 0 is equivalent to using the basic speaker.
+var optimalSpeaker = cache(function(price) {
+  return Infer({method: "enumerate"}, function() {
+    var basic_dist = basicSpeaker(price);
+    var joint_sample = sample(basic_dist);
+    
+    var utterance_dist = marginalize(basic_dist, "utterance");
+    
+    factor(alpha * (utterance_dist.score(joint_sample.utterance)));
+    
+    return joint_sample;
+  });
+});
+
+// The pragmatic listener jointly infers the state and theta,
+// assuming that the optimal speaker produced the utterance.
+var pragmaticListener = function(utterance) {
+  return Infer({method: "enumerate"}, function() {
+    var price = statePrior();
+    var s_joint = optimalSpeaker(price);
+    var sampled_s = sample(s_joint);
+    
+    condition(sampled_s.utterance == utterance);
+    
+    return {price: price,
+            theta: sampled_s.theta};
+  });
+};
+
+var expensiveBook = pragmaticListener("expensive");
+console.log("Pragmatic listener, on hearing 'expensive'");
+console.log("Price:");
+viz.auto(marginalize(expensiveBook, "price"));
+console.log("Theta threshold:");
+viz.auto(marginalize(expensiveBook, "theta"));
+
+var nothing = pragmaticListener("");
+console.log("Pragmatic listener, on hearing null");
+console.log("Price:");
+viz.auto(marginalize(nothing, "price"));
+console.log("Theta threshold:");
+viz.auto(marginalize(nothing, "theta"));
+
+var utt_dist = Infer({method: "enumerate"}, function() {
+  var price = statePrior();
+  var s_joint = optimalSpeaker(price);
+  var sampled_s = sample(s_joint);
+  return sampled_s.utterance;
+});
+console.log("Optimal speaker");
+console.log("Marginal distribution over utterances:");
+viz.auto(utt_dist);
+
+// Calculate the conditional probability of uttering "expensive", given a price
+var price_utt_dist = Infer({method: "enumerate"}, function() {
+  var price = statePrior();
+  var s_joint = optimalSpeaker(price);
+  var sampled_s = sample(s_joint);
+  return {price: price, utterance:sampled_s.utterance};
+});
+var expensive_conditional_prob = map(function(price) {
+  var expensive_joint_prob = Math.exp(price_utt_dist.score({price: price, utterance: "expensive"}));
+  var null_joint_prob = Math.exp(price_utt_dist.score({price: price, utterance: ""}));
+  return expensive_joint_prob / (expensive_joint_prob + null_joint_prob);
+}, book.prices);
+console.log("Probability of uttering 'expensive':");
+viz.bar(book.prices, expensive_conditional_prob);
