@@ -1,0 +1,75 @@
+// This code is from http://gscontras.github.io/ESSLLI-2016/chapters/3-semantics.html
+
+///fold:
+var marginalize = function(dist, key){
+  return Infer({method: "enumerate"}, function(){
+    return sample(dist)[key];
+  })
+}
+///
+
+var book = {
+  "prices": [2, 6, 10, 14, 18, 22, 26, 30],
+  "probabilities": [1, 2, 3, 4, 4, 3, 2, 1]
+};
+
+var statePrior = function() {
+  return categorical(book.probabilities, book.prices);
+};
+
+var thetaPrior = function() {
+    return uniformDraw(book.prices);
+};
+
+var alpha = 1; // rationality parameter
+
+var utterances = ["expensive", ""];
+var cost = {
+  "expensive": 1,
+  "": 0
+};
+var utterancePrior = function() {
+  var uttProbs = map(function(u) {return Math.exp(-cost[u]) }, utterances);
+  return categorical(uttProbs, utterances);
+};
+
+var meaning = function(utterance, price, theta) {
+  if (utterance == "expensive") {
+    return price >= theta;
+  } else {
+    return true;
+  }
+};
+
+var literalListener = cache(function(utterance, theta, item) {
+  return Infer({method: "enumerate"}, function() {
+    var price = statePrior();
+
+    condition(meaning(utterance, price, theta))
+
+    return price;
+  });
+});
+
+var speaker = cache(function(price, theta, item) {
+  return Infer({method: "enumerate"}, function() {
+    var utterance = utterancePrior();
+
+    factor( alpha * literalListener(utterance, theta, item).score(price) );
+
+    return utterance;
+  });
+});
+
+var pragmaticListener = function(utterance, item) {
+  return Infer({method: "enumerate"}, function() {
+    var price = statePrior();
+    var theta = thetaPrior();
+    factor(speaker(price, theta, item).score(utterance));
+    return { price: price, theta: theta };
+  });
+};
+
+var expensiveBook = pragmaticListener("expensive", "book");
+viz.auto(marginalize(expensiveBook, "price"));
+viz.auto(marginalize(expensiveBook, "theta"));
